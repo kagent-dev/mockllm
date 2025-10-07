@@ -2,6 +2,7 @@ package mockllm_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"testing"
@@ -73,7 +74,7 @@ func TestSimpleOpenAIMock(t *testing.T) {
 	server := mockllm.NewServer(config)
 	baseURL, err := server.Start(t.Context())
 	require.NoError(t, err)
-	defer server.Stop() //nolint:errcheck
+	defer server.Stop(context.Background()) //nolint:errcheck
 
 	// Make request
 	req, err := http.NewRequest("POST", baseURL+"/v1/chat/completions", bytes.NewReader(reqBytes))
@@ -152,7 +153,7 @@ func TestSimpleAnthropicMock(t *testing.T) {
 	server := mockllm.NewServer(config)
 	baseURL, err := server.Start(t.Context())
 	require.NoError(t, err)
-	defer server.Stop() //nolint:errcheck
+	defer server.Stop(context.Background()) //nolint:errcheck
 
 	// Make request
 	req, err := http.NewRequest("POST", baseURL+"/v1/messages", bytes.NewReader(reqBytes))
@@ -182,7 +183,7 @@ func TestHealthCheck(t *testing.T) {
 	server := mockllm.NewServer(config)
 	baseURL, err := server.Start(t.Context())
 	require.NoError(t, err)
-	defer server.Stop() //nolint:errcheck
+	defer server.Stop(context.Background()) //nolint:errcheck
 
 	resp, err := http.Get(baseURL + "/health")
 	require.NoError(t, err)

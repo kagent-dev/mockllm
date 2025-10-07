@@ -19,6 +19,7 @@ type Server struct {
 	anthropicProvider *AnthropicProvider
 	router            *mux.Router
 	listener          net.Listener
+	httpServer        *http.Server
 }
 
 // NewServer creates a new mock LLM server with the given config
@@ -77,9 +78,10 @@ func (s *Server) Start(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("failed to create listener: %w", err)
 	}
 	s.listener = listener
+	s.httpServer = &http.Server{Handler: s.router}
 
 	go func() {
-		if err := http.Serve(listener, s.router); err != nil && err != http.ErrServerClosed {
+		if err := s.httpServer.Serve(listener); err != nil && err != http.ErrServerClosed {
 			fmt.Printf("Server error: %v\n", err)
 		}
 	}()
@@ -104,9 +106,9 @@ func (s *Server) Start(ctx context.Context) (string, error) {
 }
 
 // Stop stops the server
-func (s *Server) Stop() error {
-	if s.listener != nil {
-		return s.listener.Close()
+func (s *Server) Stop(ctx context.Context) error {
+	if s.httpServer != nil {
+		return s.httpServer.Shutdown(ctx)
 	}
 	return nil
 }
