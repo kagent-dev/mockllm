@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/anthropics/anthropic-sdk-go"
-	"github.com/kagent-dev/kagent/go/test/mockllm"
+	"github.com/kagent-dev/mockllm"
 	"github.com/openai/openai-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

@@ -11,6 +11,8 @@ import (
 type Config struct {
 	OpenAI    []OpenAIMock    `json:"openai,omitempty"`
 	Anthropic []AnthropicMock `json:"anthropic,omitempty"`
+	// ListenAddr is the address to listen on. Defaults to 0.0.0.0:0 (any IP address and ephemeral port)
+	ListenAddr string `json:"listen_addr,omitempty"`
 }
 
 type MatchType string
