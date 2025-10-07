@@ -106,9 +106,9 @@ func (s *Server) Start(ctx context.Context) (string, error) {
 }
 
 // Stop stops the server
-func (s *Server) Stop() error {
+func (s *Server) Stop(ctx context.Context) error {
 	if s.httpServer != nil {
-		return s.httpServer.Shutdown(context.Background())
+		return s.httpServer.Shutdown(ctx)
 	}
 	return nil
 }
