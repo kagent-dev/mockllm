@@ -67,7 +67,11 @@ func LoadConfigFromFile(path string, filesys fs.ReadFileFS) (Config, error) {
 func (s *Server) Start() (string, error) {
 	s.setupRoutes()
 
-	listener, err := net.Listen("tcp", "0.0.0.0:0")
+	listenAddr := s.config.ListenAddr
+	if listenAddr == "" {
+		listenAddr = "0.0.0.0:0"
+	}
+	listener, err := net.Listen("tcp", listenAddr)
 	if err != nil {
 		return "", fmt.Errorf("failed to create listener: %w", err)
 	}
