@@ -1,14 +1,15 @@
 package mockllm
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io/fs"
 	"net"
 	"net/http"
+	"time"
 
 	"github.com/gorilla/mux"
-	"k8s.io/client-go/util/retry"
 )
 
 // Server is the main mock LLM server
@@ -64,7 +65,7 @@ func LoadConfigFromFile(path string, filesys fs.ReadFileFS) (Config, error) {
 }
 
 // Start starts the server on a random available port and returns the base URL
-func (s *Server) Start() (string, error) {
+func (s *Server) Start(ctx context.Context) (string, error) {
 	s.setupRoutes()
 
 	listenAddr := s.config.ListenAddr
@@ -83,19 +84,18 @@ func (s *Server) Start() (string, error) {
 		}
 	}()
 
-	if err := retry.OnError(retry.DefaultBackoff, func(err error) bool {
-		return err != nil
-	}, func() error {
-		resp, err := http.Get(fmt.Sprintf("http://%s/health", listener.Addr().String()))
-		if err != nil {
-			return err
-		}
-		defer resp.Body.Close() //nolint:errcheck
-		if resp.StatusCode != http.StatusOK {
-			return fmt.Errorf("health check failed: %d", resp.StatusCode)
-		}
-		return nil
-	}); err != nil {
+	if err := RetryWithBackoff(
+		ctx, 5, 500*time.Millisecond, 5*time.Second, func() error {
+			resp, err := http.Get(fmt.Sprintf("http://%s/health", listener.Addr().String()))
+			if err != nil {
+				return err
+			}
+			defer resp.Body.Close() //nolint:errcheck
+			if resp.StatusCode != http.StatusOK {
+				return fmt.Errorf("health check failed: %d", resp.StatusCode)
+			}
+			return nil
+		}); err != nil {
 		return "", fmt.Errorf("failed to health check server: %w", err)
 	}
 
