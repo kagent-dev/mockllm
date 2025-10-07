@@ -71,7 +71,7 @@ func TestSimpleOpenAIMock(t *testing.T) {
 
 	// Start server
 	server := mockllm.NewServer(config)
-	baseURL, err := server.Start()
+	baseURL, err := server.Start(t.Context())
 	require.NoError(t, err)
 	defer server.Stop() //nolint:errcheck
 
@@ -150,7 +150,7 @@ func TestSimpleAnthropicMock(t *testing.T) {
 
 	// Start server
 	server := mockllm.NewServer(config)
-	baseURL, err := server.Start()
+	baseURL, err := server.Start(t.Context())
 	require.NoError(t, err)
 	defer server.Stop() //nolint:errcheck
 
@@ -180,7 +180,7 @@ func TestSimpleAnthropicMock(t *testing.T) {
 func TestHealthCheck(t *testing.T) {
 	config := mockllm.Config{}
 	server := mockllm.NewServer(config)
-	baseURL, err := server.Start()
+	baseURL, err := server.Start(t.Context())
 	require.NoError(t, err)
 	defer server.Stop() //nolint:errcheck
 
