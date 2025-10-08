@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
-	"net"
 	"net/http"
 	"time"
 
@@ -18,7 +17,6 @@ type Server struct {
 	openaiProvider    *OpenAIProvider
 	anthropicProvider *AnthropicProvider
 	router            *mux.Router
-	listener          net.Listener
 	httpServer        *http.Server
 }
 
@@ -73,22 +71,21 @@ func (s *Server) Start(ctx context.Context) (string, error) {
 	if listenAddr == "" {
 		listenAddr = "0.0.0.0:0"
 	}
-	listener, err := net.Listen("tcp", listenAddr)
-	if err != nil {
-		return "", fmt.Errorf("failed to create listener: %w", err)
+
+	s.httpServer = &http.Server{
+		Addr:    listenAddr,
+		Handler: s.router,
 	}
-	s.listener = listener
-	s.httpServer = &http.Server{Handler: s.router}
 
 	go func() {
-		if err := s.httpServer.Serve(listener); err != nil && err != http.ErrServerClosed {
+		if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			fmt.Printf("Server error: %v\n", err)
 		}
 	}()
 
 	if err := RetryWithBackoff(
 		ctx, 5, 500*time.Millisecond, 5*time.Second, func() error {
-			resp, err := http.Get(fmt.Sprintf("http://%s/health", listener.Addr().String()))
+			resp, err := http.Get(fmt.Sprintf("http://%s/health", listenAddr))
 			if err != nil {
 				return err
 			}
@@ -101,7 +98,7 @@ func (s *Server) Start(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("failed to health check server: %w", err)
 	}
 
-	baseURL := fmt.Sprintf("http://%s", listener.Addr().String())
+	baseURL := fmt.Sprintf("http://%s", listenAddr)
 	return baseURL, nil
 }
 
