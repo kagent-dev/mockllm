@@ -32,7 +32,15 @@ func (p *OpenAIProvider) Handle(w http.ResponseWriter, r *http.Request) {
 	// Find a matching mock
 	mock := p.findMatchingMock(requestBody)
 	if mock == nil {
-		http.Error(w, "No matching mock found.", http.StatusNotFound)
+		requestBodyBytes, err := json.MarshalIndent(requestBody, "", "  ")
+		if err != nil {
+			http.Error(w, fmt.Sprintf("Failed to encode request body: %v", err),
+				http.StatusInternalServerError)
+			return
+		}
+
+		http.Error(w, fmt.Sprintf("No matching mock found. Request: %s",
+			string(requestBodyBytes)), http.StatusNotFound)
 		return
 	}
 
@@ -95,7 +103,7 @@ func (p *OpenAIProvider) requestsMatch(expected OpenAIRequestMatch, actual opena
 }
 
 // handleNonStreamingResponse sends a JSON response
-func (p *OpenAIProvider) handleNonStreamingResponse(w http.ResponseWriter, response interface{}) {
+func (p *OpenAIProvider) handleNonStreamingResponse(w http.ResponseWriter, response any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 

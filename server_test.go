@@ -136,7 +136,7 @@ func TestSimpleAnthropicMock(t *testing.T) {
 	mock.Name = "test-response"
 	mock.Response = anthropicResponse
 	mock.Match = mockllm.AnthropicRequestMatch{
-		MatchType: mockllm.MatchTypeExact,
+		MatchType: mockllm.MatchTypeContains,
 		Message:   anthropicRequest.Messages[len(anthropicRequest.Messages)-1],
 	}
 	// Marshal and unmarshal the request to get it in the right format

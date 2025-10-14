@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
+	"net"
 	"net/http"
 	"time"
 
@@ -17,6 +18,7 @@ type Server struct {
 	openaiProvider    *OpenAIProvider
 	anthropicProvider *AnthropicProvider
 	router            *mux.Router
+	listener          net.Listener
 	httpServer        *http.Server
 }
 
@@ -72,20 +74,23 @@ func (s *Server) Start(ctx context.Context) (string, error) {
 		listenAddr = "0.0.0.0:0"
 	}
 
-	s.httpServer = &http.Server{
-		Addr:    listenAddr,
-		Handler: s.router,
+	listener, err := net.Listen("tcp", listenAddr)
+	if err != nil {
+		return "", fmt.Errorf("failed to create listener: %w", err)
 	}
 
+	s.listener = listener
+	s.httpServer = &http.Server{Handler: s.router}
+
 	go func() {
-		if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := s.httpServer.Serve(listener); err != nil && err != http.ErrServerClosed {
 			fmt.Printf("Server error: %v\n", err)
 		}
 	}()
 
 	if err := RetryWithBackoff(
 		ctx, 5, 500*time.Millisecond, 5*time.Second, func() error {
-			resp, err := http.Get(fmt.Sprintf("http://%s/health", listenAddr))
+			resp, err := http.Get(fmt.Sprintf("http://%s/health", listener.Addr().String()))
 			if err != nil {
 				return err
 			}
@@ -98,7 +103,7 @@ func (s *Server) Start(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("failed to health check server: %w", err)
 	}
 
-	baseURL := fmt.Sprintf("http://%s", listenAddr)
+	baseURL := fmt.Sprintf("http://%s", listener.Addr().String())
 	return baseURL, nil
 }
 
@@ -131,21 +136,27 @@ func (s *Server) setupRoutes() {
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]interface{}{ //nolint:errcheck
+
+	if err := json.NewEncoder(w).Encode(map[string]any{
 		"status":    "healthy",
 		"service":   "mock-llm",
 		"openai":    len(s.config.OpenAI),
 		"anthropic": len(s.config.Anthropic),
-	})
+	}); err != nil {
+		http.Error(w, fmt.Sprintf("Failed to encode response: %v", err), http.StatusInternalServerError)
+	}
 }
 
 func (s *Server) handleNotFound(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusNotFound)
-	json.NewEncoder(w).Encode(map[string]interface{}{ //nolint:errcheck
+
+	if err := json.NewEncoder(w).Encode(map[string]any{
 		"error":  "Endpoint not found",
 		"path":   r.URL.Path,
 		"method": r.Method,
 		"hint":   "Supported: /v1/chat/completions (OpenAI), /v1/messages (Anthropic)",
-	})
+	}); err != nil {
+		http.Error(w, fmt.Sprintf("Failed to encode response: %v", err), http.StatusInternalServerError)
+	}
 }
