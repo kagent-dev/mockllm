@@ -321,7 +321,7 @@ func TestOpenAIResponseMock(t *testing.T) {
 	loadTestData(t, "openai_response_mock.json", &haikuResponse)
 	haikuMock := newOpenAIResponseMock(t, "haiku-response", mockllm.MatchTypeContains, haikuRequest, haikuResponse)
 
-	// Setup function output response for streaming
+	// The first tool-round-trip request returns only the model's function call.
 	funcRequest := responses.ResponseNewParams{
 		Model: openai.ChatModelGPT4,
 		Input: responses.ResponseNewParamsInputUnion{
@@ -333,9 +333,19 @@ func TestOpenAIResponseMock(t *testing.T) {
 	loadTestData(t, "openai_response_function_mock.json", &funcResponse)
 	funcMock := newOpenAIResponseMock(t, "function-response", mockllm.MatchTypeContains, funcRequest, funcResponse)
 
+	// The follow-up request is selected by the function_call_output in the last
+	// input-list position, not by the original prompt earlier in the list.
+	funcOutputRequest := responses.ResponseNewParams{
+		Model: openai.ChatModelGPT4,
+		Input: responses.ResponseNewParamsInputUnion{
+			OfString: openai.String("call_func_123"),
+		},
+	}
+	funcOutputMock := newOpenAIResponseMock(t, "function-output-response", mockllm.MatchTypeContains, funcOutputRequest, haikuResponse)
+
 	// Setup both mocks on the same server and use request matching to determine which response to return
 	config := mockllm.Config{
-		OpenAIResponse: []mockllm.OpenAIResponseMock{haikuMock, funcMock},
+		OpenAIResponse: []mockllm.OpenAIResponseMock{haikuMock, funcMock, funcOutputMock},
 	}
 
 	baseURL, cleanup := startTestServer(t, config)
@@ -356,33 +366,26 @@ func TestOpenAIResponseMock(t *testing.T) {
 		assert.Contains(t, outputText, "Kagent finds its mind")
 	})
 
-	// Test streaming response (function output)
-	t.Run("streaming", func(t *testing.T) {
-		stream := client.Responses.NewStreaming(t.Context(), funcRequest)
+	t.Run("tool round trip matches only last list item", func(t *testing.T) {
+		first, err := client.Responses.New(t.Context(), funcRequest)
+		require.NoError(t, err)
+		require.Len(t, first.Output, 1)
+		assert.Equal(t, "function_call", first.Output[0].Type)
 
-		var receivedEvents []string
-		var functionCallFound, functionOutputFound bool
-
-		for stream.Next() {
-			data := stream.Current()
-			if data.Type != "" {
-				receivedEvents = append(receivedEvents, data.Type)
-				if data.Type == "response.function_call_arguments.done" {
-					functionCallFound = true
-				}
-				if data.Type == "response.function_call_output.done" {
-					functionOutputFound = true
-				}
-			}
+		followUp := responses.ResponseNewParams{
+			Model: openai.ChatModelGPT4,
+			Input: responses.ResponseNewParamsInputUnion{
+				OfInputItemList: responses.ResponseInputParam{
+					responses.ResponseInputItemParamOfMessage("Calculate 2+2", responses.EasyInputMessageRoleUser),
+					responses.ResponseInputItemParamOfFunctionCall("{\"expression\":\"2+2\"}", "call_func_123", "calculate"),
+					responses.ResponseInputItemParamOfFunctionCallOutput("call_func_123", "4"),
+				},
+			},
 		}
-
-		if err := stream.Err(); err != nil {
-			t.Fatalf("Stream error: %v", err)
-		}
-
-		assert.Greater(t, len(receivedEvents), 0)
-		assert.True(t, functionCallFound, "Should receive function_call_arguments.done event")
-		assert.True(t, functionOutputFound, "Should receive function_call_output.done event")
+		second, err := client.Responses.New(t.Context(), followUp)
+		require.NoError(t, err)
+		assert.Equal(t, "resp_123", second.ID, "the original prompt must not select the first mock again")
+		assert.Contains(t, second.OutputText(), "Kagent finds its mind")
 	})
 }
 

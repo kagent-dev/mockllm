@@ -187,10 +187,11 @@ func (p *OpenAIResponseProvider) handleNonStreamingResponse(w http.ResponseWrite
 
 // handleResponsesStreamingResponse sends a streaming SSE response for Responses API
 func (p *OpenAIResponseProvider) handleResponsesStreamingResponse(w http.ResponseWriter, response responses.Response) {
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.WriteHeader(http.StatusOK)
+	events, err := buildResponseStream(response)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Invalid streaming response fixture: %v", err), http.StatusInternalServerError)
+		return
+	}
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -198,123 +199,198 @@ func (p *OpenAIResponseProvider) handleResponsesStreamingResponse(w http.Respons
 		return
 	}
 
-	// Helper to send a chunk
-	sendChunk := func(chunk map[string]interface{}) {
-		jsonBytes, err := json.Marshal(chunk)
-		if err != nil {
-			fmt.Printf("Failed to encode chunk: %v\n", err)
-			return
-		}
-		fmt.Fprintf(w, "data: %s\n\n", jsonBytes)
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.WriteHeader(http.StatusOK)
+
+	for _, event := range events {
+		fmt.Fprintf(w, "event: %s\n", event.eventType)
+		fmt.Fprintf(w, "data: %s\n\n", event.data)
 		flusher.Flush()
 	}
 
-	// Send response.created event
-	chunk := map[string]interface{}{
-		"type": "response.created",
-	}
-	sendChunk(chunk)
+	fmt.Fprint(w, "data: [DONE]\n\n")
+	flusher.Flush()
+}
 
-	for _, outputItem := range response.Output {
+// streamEvent separates semantic event construction from SSE framing.
+type streamEvent struct {
+	eventType string
+	data      json.RawMessage
+}
+
+type outputItemStreamPayload struct {
+	Type           string `json:"type"`
+	SequenceNumber int64  `json:"sequence_number"`
+	OutputIndex    int64  `json:"output_index"`
+	Item           any    `json:"item"`
+}
+
+type contentPartStreamPayload struct {
+	Type           string `json:"type"`
+	SequenceNumber int64  `json:"sequence_number"`
+	ItemID         string `json:"item_id"`
+	OutputIndex    int64  `json:"output_index"`
+	ContentIndex   int64  `json:"content_index"`
+	Part           any    `json:"part"`
+}
+
+type messageStreamItem struct {
+	ID      string `json:"id"`
+	Type    string `json:"type"`
+	Status  string `json:"status"`
+	Role    string `json:"role"`
+	Content any    `json:"content"`
+}
+
+type functionCallStreamItem struct {
+	ID        string `json:"id"`
+	Type      string `json:"type"`
+	Status    string `json:"status"`
+	CallID    string `json:"call_id"`
+	Name      string `json:"name"`
+	Namespace string `json:"namespace,omitempty"`
+	Arguments string `json:"arguments"`
+}
+
+type outputTextStreamPart struct {
+	Type        string                                        `json:"type"`
+	Text        string                                        `json:"text"`
+	Annotations []responses.ResponseOutputTextAnnotationUnion `json:"annotations"`
+	Logprobs    []responses.ResponseOutputTextLogprob         `json:"logprobs,omitempty"`
+}
+
+// buildResponseStream translates one final Responses API fixture into the
+// lifecycle events emitted by the real streaming API. It never changes response.
+func buildResponseStream(response responses.Response) ([]streamEvent, error) {
+	if response.ID == "" {
+		return nil, fmt.Errorf("response id is required")
+	}
+
+	inProgress := response
+	inProgress.Status = responses.ResponseStatusInProgress
+	inProgress.Output = []responses.ResponseOutputItemUnion{}
+
+	completed := response
+	completed.Status = responses.ResponseStatusCompleted
+
+	sequence := int64(0)
+	events := make([]streamEvent, 0)
+	add := func(eventType string, payload any) error {
+		data, err := json.Marshal(payload)
+		if err != nil {
+			return fmt.Errorf("marshal %s: %w", eventType, err)
+		}
+		events = append(events, streamEvent{eventType: eventType, data: data})
+		sequence++
+		return nil
+	}
+
+	if err := add("response.created", responses.ResponseCreatedEvent{SequenceNumber: sequence, Response: inProgress}); err != nil {
+		return nil, err
+	}
+	if err := add("response.in_progress", responses.ResponseInProgressEvent{SequenceNumber: sequence, Response: inProgress}); err != nil {
+		return nil, err
+	}
+
+	for outputIndex, outputItem := range response.Output {
 		switch outputItem.Type {
 		case "message":
 			message := outputItem.AsMessage()
-
-			for _, contentItem := range message.Content {
-				if contentItem.Type == "output_text" && contentItem.Text != "" {
-					text := contentItem.Text
-					// Send delta chunks of 10 characters at a time
-					chunkSize := 10
-					for i := 0; i < len(text); i += chunkSize {
-						end := i + chunkSize
-						if end > len(text) {
-							end = len(text)
-						}
-						delta := text[i:end]
-
-						chunk := map[string]interface{}{
-							"type":  "response.output_text.delta",
-							"delta": delta,
-						}
-						sendChunk(chunk)
-					}
-
-					// Send done event with complete text
-					chunk := map[string]interface{}{
-						"type": "response.output_text.done",
-						"json": map[string]interface{}{
-							"text": text,
-						},
-						"text": text,
-					}
-					sendChunk(chunk)
+			if message.ID == "" {
+				return nil, fmt.Errorf("output[%d] message id is required", outputIndex)
+			}
+			for contentIndex, contentItem := range message.Content {
+				if contentItem.Type != "output_text" {
+					return nil, fmt.Errorf("output[%d].content[%d] type %q is unsupported", outputIndex, contentIndex, contentItem.Type)
 				}
+			}
+
+			addedItem := messageStreamItem{ID: message.ID, Type: "message", Status: "in_progress", Role: "assistant", Content: []any{}}
+			if err := add("response.output_item.added", outputItemStreamPayload{Type: "response.output_item.added", SequenceNumber: sequence, OutputIndex: int64(outputIndex), Item: addedItem}); err != nil {
+				return nil, err
+			}
+
+			for contentIndex, contentItem := range message.Content {
+				content := contentItem.AsOutputText()
+				addedPart := outputTextStreamPart{Type: "output_text", Text: "", Annotations: []responses.ResponseOutputTextAnnotationUnion{}}
+				if err := add("response.content_part.added", contentPartStreamPayload{Type: "response.content_part.added", SequenceNumber: sequence, ItemID: message.ID, OutputIndex: int64(outputIndex), ContentIndex: int64(contentIndex), Part: addedPart}); err != nil {
+					return nil, err
+				}
+				if err := add("response.output_text.delta", responses.ResponseTextDeltaEvent{SequenceNumber: sequence, ItemID: message.ID, OutputIndex: int64(outputIndex), ContentIndex: int64(contentIndex), Delta: content.Text, Logprobs: []responses.ResponseTextDeltaEventLogprob{}}); err != nil {
+					return nil, err
+				}
+				if err := add("response.output_text.done", responses.ResponseTextDoneEvent{SequenceNumber: sequence, ItemID: message.ID, OutputIndex: int64(outputIndex), ContentIndex: int64(contentIndex), Text: content.Text, Logprobs: []responses.ResponseTextDoneEventLogprob{}}); err != nil {
+					return nil, err
+				}
+				donePart := outputTextStreamPart{Type: "output_text", Text: content.Text, Annotations: content.Annotations, Logprobs: content.Logprobs}
+				if err := add("response.content_part.done", contentPartStreamPayload{Type: "response.content_part.done", SequenceNumber: sequence, ItemID: message.ID, OutputIndex: int64(outputIndex), ContentIndex: int64(contentIndex), Part: donePart}); err != nil {
+					return nil, err
+				}
+			}
+
+			doneItem := messageStreamItem{ID: message.ID, Type: "message", Status: "completed", Role: "assistant", Content: message.Content}
+			if err := add("response.output_item.done", outputItemStreamPayload{Type: "response.output_item.done", SequenceNumber: sequence, OutputIndex: int64(outputIndex), Item: doneItem}); err != nil {
+				return nil, err
 			}
 
 		case "function_call":
-			funcCall := outputItem.AsFunctionCall()
-			// Send function call arguments delta
-			if funcCall.Arguments != "" {
-				chunk := map[string]interface{}{
-					"type":      "response.function_call_arguments.delta",
-					"name":      funcCall.Name,
-					"arguments": funcCall.Arguments,
-				}
-				sendChunk(chunk)
+			functionCall := outputItem.AsFunctionCall()
+			var rawFunctionCall struct {
+				Namespace string `json:"namespace"`
+			}
+			if err := json.Unmarshal([]byte(outputItem.RawJSON()), &rawFunctionCall); err != nil {
+				return nil, fmt.Errorf("decode output[%d] function call: %w", outputIndex, err)
+			}
+			if functionCall.ID == "" {
+				return nil, fmt.Errorf("output[%d] function call id is required", outputIndex)
+			}
+			if functionCall.CallID == "" || functionCall.Name == "" {
+				return nil, fmt.Errorf("output[%d] function call requires call_id and name", outputIndex)
+			}
+			if !json.Valid([]byte(functionCall.Arguments)) {
+				return nil, fmt.Errorf("output[%d] function call arguments must be valid JSON", outputIndex)
 			}
 
-			// Send function call arguments done
-			chunk := map[string]interface{}{
-				"type":      "response.function_call_arguments.done",
-				"name":      funcCall.Name,
-				"arguments": funcCall.Arguments,
-				"call_id":   funcCall.CallID,
+			addedItem := functionCallStreamItem{ID: functionCall.ID, Type: "function_call", Status: "in_progress", CallID: functionCall.CallID, Name: functionCall.Name, Namespace: rawFunctionCall.Namespace, Arguments: ""}
+			if err := add("response.output_item.added", outputItemStreamPayload{Type: "response.output_item.added", SequenceNumber: sequence, OutputIndex: int64(outputIndex), Item: addedItem}); err != nil {
+				return nil, err
 			}
-			sendChunk(chunk)
-
-		case "function_call_output":
-			callID := outputItem.CallID
-			output := ""
-
-			// The Output field is a union type, try to extract string value
-			if outputItem.Output.OfString != "" {
-				output = outputItem.Output.OfString
-			} else {
-				// If it's not a string, marshal it to JSON
-				// These are meant for complex OpenAI built-in tools, unlikely to be used in mocks
-				if outputBytes, err := json.Marshal(outputItem.Output); err == nil {
-					output = string(outputBytes)
-				}
+			if err := add("response.function_call_arguments.delta", responses.ResponseFunctionCallArgumentsDeltaEvent{SequenceNumber: sequence, ItemID: functionCall.ID, OutputIndex: int64(outputIndex), Delta: functionCall.Arguments}); err != nil {
+				return nil, err
+			}
+			if err := add("response.function_call_arguments.done", responses.ResponseFunctionCallArgumentsDoneEvent{SequenceNumber: sequence, ItemID: functionCall.ID, OutputIndex: int64(outputIndex), Arguments: functionCall.Arguments, Name: functionCall.Name}); err != nil {
+				return nil, err
+			}
+			doneItem := functionCallStreamItem{ID: functionCall.ID, Type: "function_call", Status: "completed", CallID: functionCall.CallID, Name: functionCall.Name, Namespace: rawFunctionCall.Namespace, Arguments: functionCall.Arguments}
+			if err := add("response.output_item.done", outputItemStreamPayload{Type: "response.output_item.done", SequenceNumber: sequence, OutputIndex: int64(outputIndex), Item: doneItem}); err != nil {
+				return nil, err
 			}
 
-			if output != "" {
-				// Send function call output delta
-				chunk := map[string]interface{}{
-					"type":    "response.function_call_output.delta",
-					"call_id": callID,
-					"output":  output,
-				}
-				sendChunk(chunk)
-
-				// Send function call output done
-				chunk = map[string]interface{}{
-					"type":    "response.function_call_output.done",
-					"call_id": callID,
-					"output":  output,
-				}
-				sendChunk(chunk)
+		case "tool_search_call":
+			rawToolSearchCall := json.RawMessage(outputItem.RawJSON())
+			var toolSearchCall struct {
+				ID     string `json:"id"`
+				CallID string `json:"call_id"`
 			}
+			if err := json.Unmarshal(rawToolSearchCall, &toolSearchCall); err != nil {
+				return nil, fmt.Errorf("decode output[%d] tool search call: %w", outputIndex, err)
+			}
+			if toolSearchCall.ID == "" || toolSearchCall.CallID == "" {
+				return nil, fmt.Errorf("output[%d] tool search call requires id and call_id", outputIndex)
+			}
+			if err := add("response.output_item.done", outputItemStreamPayload{Type: "response.output_item.done", SequenceNumber: sequence, OutputIndex: int64(outputIndex), Item: rawToolSearchCall}); err != nil {
+				return nil, err
+			}
+
+		default:
+			return nil, fmt.Errorf("output[%d] type %q is unsupported for streaming", outputIndex, outputItem.Type)
 		}
 	}
 
-	// Send response.completed event
-	chunk = map[string]interface{}{
-		"type":     "response.completed",
-		"response": response,
+	if err := add("response.completed", responses.ResponseCompletedEvent{SequenceNumber: sequence, Response: completed}); err != nil {
+		return nil, err
 	}
-	sendChunk(chunk)
-
-	// Send DONE
-	fmt.Fprint(w, "data: [DONE]\n\n")
-	flusher.Flush()
+	return events, nil
 }
