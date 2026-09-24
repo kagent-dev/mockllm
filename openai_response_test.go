@@ -123,6 +123,7 @@ func TestBuildResponseStreamFunctionCallLifecycle(t *testing.T) {
 	added := decoded[2]["item"].(map[string]any)
 	assert.Equal(t, "in_progress", added["status"])
 	assert.Equal(t, "", added["arguments"])
+	assert.Equal(t, "calculate", added["name"])
 	assert.Equal(t, "mcp__tools", added["namespace"])
 	assert.Equal(t, "fc_1", decoded[3]["item_id"])
 	assert.Equal(t, float64(0), decoded[3]["output_index"])
@@ -134,6 +135,7 @@ func TestBuildResponseStreamFunctionCallLifecycle(t *testing.T) {
 	assert.Equal(t, float64(0), decoded[4]["output_index"])
 	done := decoded[5]["item"].(map[string]any)
 	assert.Equal(t, "completed", done["status"])
+	assert.Equal(t, "calculate", done["name"])
 	assert.Equal(t, "mcp__tools", done["namespace"])
 
 	for _, event := range events {
