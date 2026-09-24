@@ -372,13 +372,15 @@ func TestOpenAIResponseMock(t *testing.T) {
 		require.Len(t, first.Output, 1)
 		assert.Equal(t, "function_call", first.Output[0].Type)
 
+		functionOutput := responses.ResponseInputItemParamOfFunctionCallOutput("4")
+		functionOutput.OfFunctionCallOutput.CallID = openai.String("call_func_123")
 		followUp := responses.ResponseNewParams{
 			Model: openai.ChatModelGPT4,
 			Input: responses.ResponseNewParamsInputUnion{
 				OfInputItemList: responses.ResponseInputParam{
 					responses.ResponseInputItemParamOfMessage("Calculate 2+2", responses.EasyInputMessageRoleUser),
 					responses.ResponseInputItemParamOfFunctionCall("{\"expression\":\"2+2\"}", "call_func_123", "calculate"),
-					responses.ResponseInputItemParamOfFunctionCallOutput("call_func_123", "4"),
+					functionOutput,
 				},
 			},
 		}

@@ -254,6 +254,16 @@ type functionCallStreamItem struct {
 	Arguments string `json:"arguments"`
 }
 
+// Keep the function name in the stream even when the SDK event type omits it.
+type functionCallArgumentsDoneStreamPayload struct {
+	Type           string `json:"type"`
+	SequenceNumber int64  `json:"sequence_number"`
+	ItemID         string `json:"item_id"`
+	OutputIndex    int64  `json:"output_index"`
+	Arguments      string `json:"arguments"`
+	Name           string `json:"name"`
+}
+
 type outputTextStreamPart struct {
 	Type        string                                        `json:"type"`
 	Text        string                                        `json:"text"`
@@ -360,7 +370,7 @@ func buildResponseStream(response responses.Response) ([]streamEvent, error) {
 			if err := add("response.function_call_arguments.delta", responses.ResponseFunctionCallArgumentsDeltaEvent{SequenceNumber: sequence, ItemID: functionCall.ID, OutputIndex: int64(outputIndex), Delta: functionCall.Arguments}); err != nil {
 				return nil, err
 			}
-			if err := add("response.function_call_arguments.done", responses.ResponseFunctionCallArgumentsDoneEvent{SequenceNumber: sequence, ItemID: functionCall.ID, OutputIndex: int64(outputIndex), Arguments: functionCall.Arguments, Name: functionCall.Name}); err != nil {
+			if err := add("response.function_call_arguments.done", functionCallArgumentsDoneStreamPayload{Type: "response.function_call_arguments.done", SequenceNumber: sequence, ItemID: functionCall.ID, OutputIndex: int64(outputIndex), Arguments: functionCall.Arguments, Name: functionCall.Name}); err != nil {
 				return nil, err
 			}
 			doneItem := functionCallStreamItem{ID: functionCall.ID, Type: "function_call", Status: "completed", CallID: functionCall.CallID, Name: functionCall.Name, Namespace: rawFunctionCall.Namespace, Arguments: functionCall.Arguments}
